@@ -1,70 +1,122 @@
 ---
 name: nocodb-pdpj-sync
-description: Skill de automação para ler CPFs novos no NocoDB, pesquisar no PDPJ e atualizar as observações automaticamente.
-skills:
-  - pdpj-researcher
+description: Skill de automação para ler CPFs novos no NocoDB, pesquisar no PDPJ usando a técnica do pdpj-researcher, e atualizar as observações Criminais e Trabalhistas no NocoDB automaticamente.
 ---
 
 # NocoDB + PDPJ Sync Skill
 
-## 🎯 Objetivo
-Varredura autônoma em tabelas do NocoDB para realizar background-check (Criminal/Trabalhista) via PDPJ/CNJ de forma sequencial e segura.
+> Agente de sincronização autônoma: Conecta a tabela do NocoDB aos robôs do servidor MCP TecJustiça para preencher fichas de inteligência automaticamente.
 
-## 🧠 Fluxo de Execução (REGRAS DE OURO)
+## 🎯 Objetivo Global
 
-1. **BUSCA DE PENDÊNCIAS (NocoDB)**
-   - Ferramenta: `mcp_nocodb-pesquisas-empresas_queryRecords`.
-   - Tabela: `mxr0nh36qllj0w2`.
-   - Filtro: `(CPF,notblank)~and(OBS. CRIMINAIS,blank)`.
-   - **IMPORTANTE**: Processar um registro por vez (limit: 1) para evitar timeouts e garantir integridade.
+> **Orientação MÁXIMA:** A partir de agora, é OBRIGATÓRIO que ao atualizar os campos **OBS. CRIMINAIS** e **OBS. TRABALHISTAS**, você utilize resumos altamente detalhados. O campo "RESUMO" não deve ser genérico; ele deve conter uma explicação técnica e fatídica de **3 a 5 linhas** extraída obrigatoriamente via `pdpj_analise_essencial`.
 
-2. **EXTRAÇÃO E LEITURA (Deep Dive):**
-   - Para **cada** processo que passou no filtro, utilize a ferramenta `pdpj_visao_geral_processo` para capturar as informações estruturais (Tribunal, Partes, Status, Valor).
-   - Acione imediatamente a ferramenta `pdpj_analise_essencial`. Você **deve** usar esta ferramenta para acessar os documentos iniciais e últimas decisões.
-   - **OBRIGATÓRIO:** Identificar a capitulação penal (Artigo e Crime). Se for Execução Penal, buscar o processo originário para confirmar o crime cometido.
+Realizar varreduras periódicas ou sob demanda nas tabelas do NocoDB em busca de registros (funcionários/motoristas) que ainda não foram auditados criminalmente e trabalhisticamente. Pesquisá-los no PDPJ (CNJ) e salvar os resultados de volta na plataforma de banco de dados, fechando o ciclo de background-check.
 
-3. **SÍNTESE DO ANALISTA (Módulo IA):**
-   - Com base nos documentos lidos, escreva um **Resumo Executivo de Inteligência**.
-   - O resumo deve ser focado no modus operandi, na infração penal (especificando o crime) ou no motivo grave da lide disfarçada sob jargão jurídico. Vá direto ao fato ilícito/grave.
+## 🧠 Fluxo de Execução Obrigatório
 
-4. **FORMATAÇÃO DE RESULTADOS (PADRÃO OBRIGATÓRIO)**
-   - **NADA**: Se não houver processos graves, escrever `"NADA"`.
-   - **CPF INVÁLIDO**: Se o CPF for inválido ou parcial, escrever `"NADA (CPF PARCIAL/FORMATO INVÁLIDO)"`.
-   
-   - **CASOS POSITIVOS (MULTI-PROCESSO)**:
-     - Se houver mais de um processo, cada um deve ser inserido separadamente com **UMA LINHA EM BRANCO**, seguida por **TRÊS HÍFENS (---)** e **OUTRA LINHA EM BRANCO** como divisor visual obrigatório.
-      
-     - **TEMPLATE CRIMINAL**:
-       PROCESSO CRIMINAL Nº [NUMERO]
-       CRIME/CAPITULAÇÃO: [ARTIGO E NOME DO CRIME - EX: ART. 33 - TRÁFICO DE DROGAS]
-       AUTOR: [NOME DA PARTE ATIVA]
-       [RÉU/ACUSADO/APENADO/INVESTIGADO]: [NOME DA PARTE PASSIVA]
-       ORIGEM/JUSTIÇA: [VARA/COMARCA] - [TRIBUNAL]
-       INSTÂNCIA: [GRAU DE JURISDIÇÃO]
-       ANO DO PROCESSO: [ANO]
-       STATUS: [STATUS]
-       RESUMO: [RESUMO INTELIGENTE OBRIGATORIAMENTE INCLUINDO O FATO GERADOR E CAPITULAÇÃO PENAL]
+Sempre que o usuário solicitar a sincronização (ex: "Sincronizar NocoDB", "Processar CPFs pendentes", "Rode o sync"), execute de forma autônoma os seguintes passos:
 
-     - **TEMPLATE TRABALHISTA**:
-       PROCESSO TRABALHISTA Nº [NUMERO]
-       RECLAMANTE: [NOME DA PARTE ATIVA]
-       RECLAMADO: [NOME DA PARTE PASSIVA]
-       ORIGEM/JUSTIÇA: [VARA/COMARCA] - [TRIBUNAL]
-       ANO DO PROCESSO: [ANO]
-       VALOR DA CAUSA: [VALOR]
-       STATUS: [STATUS]
-       ASSUNTO TÉCNICO: [ASSUNTO]
-       RESUMO: [RESUMO INTELIGENTE FOCADO NO MOTIVO DA LIDE E RISCO EMPRESARIAL]
+### 1. BUSCA DE PENDÊNCIAS (NocoDB)
+Utilize a ferramenta `mcp_nocodb_pesquisas_empresas_queryRecords` especificando a `tableId` desejada (ex: `mxr0nh36qllj0w2` para Base_empresas).
+- **Filtro obrigatório:** Onde o CPF existe E a coluna "OBS. CRIMINAIS" esteja vazia. Em syntax NocoDB OData: `(CPF,notblank)~and(OBS. CRIMINAIS,blank)` ou use os IDs dos campos.
 
-5. **ATUALIZAÇÃO (NocoDB)**
-   - Ferramenta: `mcp_nocodb-pesquisas-empresas_updateRecords`.
-   - Coluna Criminal (ID): `c7on89qkiyfw9k7`.
-   - Coluna Trabalhista (ID): `cdx78fvc5ekm0pp`.
+### 1.5. VALIDAÇÃO DE CPF (antes de consultar o PDPJ)
+Antes de chamar o PDPJ, valide o CPF usando o algoritmo oficial de dígitos verificadores:
 
-5. **RELATÓRIO FINAL**
-   - Ao final do lote, informar ao usuário o total de registros sincronizados com sucesso.
+```
+function validarCPF(cpf) {
+  cpf = cpf.replace(/\D/g, '');
+  if (cpf.length !== 11) return false;
+  // Rejeita sequências de dígitos iguais (111.111.111-11, etc.)
+  if (/^(\d)\1{10}$/.test(cpf)) return false;
 
-## 🛠️ Comandos de Gatilho
-- "Sincronizar CPFs pendentes"
-- "Executar automação NocoDB PDPJ"
-- "Auditores pendentes no NocoDB"
+  // Primeiro dígito verificador
+  let soma = 0;
+  for (let i = 0; i < 9; i++) soma += parseInt(cpf[i]) * (10 - i);
+  let resto = soma % 11;
+  let dv1 = resto < 2 ? 0 : 11 - resto;
+  if (parseInt(cpf[9]) !== dv1) return false;
+
+  // Segundo dígito verificador
+  soma = 0;
+  for (let i = 0; i < 10; i++) soma += parseInt(cpf[i]) * (11 - i);
+  resto = soma % 11;
+  let dv2 = resto < 2 ? 0 : 11 - resto;
+  return parseInt(cpf[10]) === dv2;
+}
+```
+
+**Se o CPF for inválido:** preencha ambas as colunas com `"NADA (CPF INVÁLIDO — DÍGITOS VERIFICADORES)"` e pule para o próximo registro.
+
+### 2. AUDITORIA NO PDPJ (TecJustiça)
+Para cada registro com CPF válido:
+- Utilize a ferramenta `mcp_tecjustica_pdpj_buscar_processos` buscando pelo CPF da pessoa.
+- **RESTRIÇÃO DE ESFERA (CRÍTICO):** Ignore sumariamente qualquer processo que NÃO seja das esferas **CRIMINAL/PENAL** ou **TRABALHISTA**.
+- **PROIBIÇÃO:** É terminantemente proibido inserir processos de Execução de Título Extrajudicial, Cobranças Cíveis, Inventários ou qualquer outra lide estritamente cível na tabela. Se o CPF possuir apenas processos cíveis, o resultado final deve ser `"NADA"`.
+- Se houver processos Criminais ou Trabalhistas, use **OBRIGATORIAMENTE** a ferramenta `pdpj_analise_essencial` para extrair o resumo em 3-5 linhas.
+
+### 2.5. REGRA CRÍTICA: INTERPRETAÇÃO DAS PARTES NO PDPJ
+⚠️ **NUNCA copie cegamente os dados de partes do PDPJ.** Use lógica jurídica:
+- **Processos Trabalhistas:** A pessoa pesquisada (CPF) é quase sempre o **RECLAMANTE**. A empresa é o **RECLAMADO**.
+- **Processos Criminais:** A pessoa pesquisada (CPF) é tipicamente o **RÉU**. O **AUTOR** é o Ministério Público ou vítima.
+
+### 3. FORMATAÇÃO E SEPARAÇÃO DOS DADOS
+- Crie strings separadas para as duas colunas seguindo o **PADRÃO IMUTÁVEL** especificado abaixo. 
+- **CABEÇALHOS:** Você deve OBRIGATORIAMENTE iniciar a string com o título Markdown `## INFORMAÇÕES CRIMINAIS` ou `## INFORMAÇÕES TRABALHISTAS`.
+- **MULTIPLICIDADE:** Se um CPF possuir mais de um processo relevante, separe-os com a linha de 142 traços:
+  `--------------------------------------------------------------------------------------------------------------------------------------------------------------`
+
+**A) OBS. CRIMINAIS (campo `c7on89qkiyfw9k7`):**
+```markdown
+## INFORMAÇÕES CRIMINAIS
+
+PROCESSO CRIMINAL Nº [número]
+AUTORIDADE POLICIAL: [delegacia ou comando, se disponível]
+RÉU: [nome completo]
+ORIGEM/JUSTIÇA: [comarca/vara e tribunal]
+INSTÂNCIA: [grau - ex: 1º GRAU]
+ANO DO PROCESSO: [ano]
+VALOR DA CAUSA: NÃO APLICÁVEL (processo criminal)
+STATUS: [situação atual detalhada entre parênteses]
+ASSUNTO TÉCNICO: [tipificação exata do crime e artigo, se houver]
+RESUMO: [Texto robusto e detalhado extraído do pdpj_analise_essencial]
+```
+
+**B) OBS. TRABALHISTAS (campo `cdx78fvc5ekm0pp`):**
+```markdown
+## INFORMAÇÕES TRABALHISTAS
+
+PROCESSO TRABALHISTA Nº [número]
+RECLAMANTE: [nome completo ou razão social]
+RECLAMADO: [nome completo ou razão social]
+ORIGEM/JUSTIÇA: [vara do trabalho e tribunal]
+INSTÂNCIA: [grau - ex: 1º GRAU]
+ANO DO PROCESSO: [ano]
+VALOR DA CAUSA: [valor exato e observação se é valor de acordo]
+STATUS: [situação atual detalhada entre parênteses]
+ASSUNTO TÉCNICO: [assunto principal da lide]
+RESUMO: [Texto robusto e detalhado extraído do pdpj_analise_essencial]
+```
+
+- Se não houver ocorrências relevantes após a triagem, insira apenas a string `"NADA"`.
+- Se o PDPJ retornar erro (404, 500, etc.) mesmo com CPF válido, insira `"NADA"`.
+
+### 4. REGRA DE IMUTABILIDADE (DITADURA DO PADRÃO)
+⚠️ **ESTE PADRÃO DE FORMATAÇÃO É IMUTÁVEL.** 
+1. Jamais modifique a ordem dos campos ou os rótulos.
+2. **NUNCA** omita um campo do gabarito (se não houver o dado, preencha com "Não informado").
+3. **QUEBRAS DE LINHA REAIS:** Ao chamar a ferramenta `updateRecords`, certifique-se de enviar quebras de linha reais na string do JSON, não o caractere literal `\n`. O usuário deve ver o texto em blocos, não em uma linha única suja.
+
+### 5. CHECKLIST DE PRÉ-ENVIO (MANDATÓRIO)
+Antes de executar o `updateRecords`, verifique:
+- [ ] O título `## INFORMAÇÕES ...` está no topo?
+- [ ] O campo `VALOR DA CAUSA:` está presente (mesmo em Criminais como "N/A")?
+- [ ] O `RESUMO:` tem no mínimo 3 linhas de conteúdo real?
+- [ ] Enviei quebras de linha reais no JSON?
+- [ ] Removi lites cíveis/cobranças de banco?
+
+### 6. ATUALIZAÇÃO EM MASSA (NocoDB)
+Utilize a ferramenta `mcp_nocodb_pesquisas_empresas_updateRecords` enviando o array de resultados processados. No máximo 10 registros por chamada.
+
+... (mantém o resto do arquivo)
